@@ -127,6 +127,17 @@ docker run --name sonrisa-postgres -p 5432:5432 -e POSTGRES_DB=alerts -e POSTGRE
 ./gradlew bootRun
 ```
 
+### 3. Interactive API Exploration (Swagger UI)
+Once the application is running, you don't need external tools like Postman to test the endpoints. The project includes built-in **Swagger UI** support.
+
+Simply open your browser and navigate to:
+👉 **http://localhost:8080/swagger-ui.html**
+
+From this interactive dashboard, you can:
+*   **Explore the Schema**: Review the exact model definitions for `CreateAlertRequest`, `EventType`, `EventCategory`, and `Severity`.
+*   **Send Live Requests**: Use the **"Try it out"** button on the `POST /api/admin/alerts` endpoint to send test payloads directly to your running local database.
+*   **Audit Deliveries**: Trigger the `GET /api/admin/deliveries` endpoint to instantly see the real-time status of sent, pending, or failed notifications.
+
 ## MVP Scope
 
 The MVP includes:

@@ -15,11 +15,11 @@ import java.util.List;
 public record CreateAlertRequest(
     
     @NotNull
-    @Schema(description = "The type of event to filter on.", example = "EARTHQUAKE", requiredMode = Schema.RequiredMode.REQUIRED)
+    @Schema(description = "The type of event to filter on.", example = "BREAKING_NEWS", requiredMode = Schema.RequiredMode.REQUIRED)
     EventType eventType,
     
     @NotNull
-    @Schema(description = "General category of the event.", example = "NATURAL_DISASTER", requiredMode = Schema.RequiredMode.REQUIRED)
+    @Schema(description = "General category of the event.", example = "DISASTER", requiredMode = Schema.RequiredMode.REQUIRED)
     EventCategory category,
     
     @NotNull
