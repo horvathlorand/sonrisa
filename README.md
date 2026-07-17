@@ -108,11 +108,23 @@ AI-generated output was not accepted automatically.
 
 The implementation was reviewed for correctness, maintainability, concurrency safety, idempotency, failure handling, and test quality.
 
-## Running
+## Getting Started & Running
+
+The project requires **Docker** to be installed and running on your machine.
+
+### 1. Running the Automated Tests
+The integration test suite uses **Testcontainers**. It automatically spins up and tears down isolated PostgreSQL instances. **No manual database setup is required to run the tests.**
 
 ```bash
-docker compose up -d
 ./gradlew clean test
+```
+
+### 2. Running locally, if you have docker installed
+docker run --name sonrisa-postgres -p 5432:5432 -e POSTGRES_DB=alerts -e POSTGRES_PASSWORD=postgres -e POSTGRES_USER=postgres -d postgres:16
+
+### If postgres database running then we can bootRun
+```bash
+./gradlew bootRun
 ```
 
 ## MVP Scope
