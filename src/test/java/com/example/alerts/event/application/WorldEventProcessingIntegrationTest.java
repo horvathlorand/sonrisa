@@ -29,8 +29,12 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -108,6 +112,46 @@ class WorldEventProcessingIntegrationTest {
     }
 
     @Test
+    void slowExternalProviderSeesCommittedPendingDeliveryOutsideDatabaseTransaction() throws Exception {
+        CountDownLatch sendStarted = new CountDownLatch(1);
+        CountDownLatch releaseSend = new CountDownLatch(1);
+        emailChannel.blockNextSend(sendStarted, releaseSend);
+        alertRepository.save(alert(AlertStatus.ACTIVE, ChannelType.EMAIL, "ops@example.com"));
+        var executor = Executors.newSingleThreadExecutor();
+
+        try {
+            var future = executor.submit(() -> {
+                processingService.process(
+                    worldEvent("source-slow-provider", EventType.BREAKING_NEWS, EventCategory.NEWS, Severity.HIGH)
+                );
+                return null;
+            });
+
+            assertThat(sendStarted.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(emailChannel.transactionStates()).containsExactly(false);
+            assertThat(deliveryRepository.findAll())
+                .singleElement()
+                .satisfies(delivery -> {
+                    assertThat(delivery.getStatus()).isEqualTo(DeliveryStatus.PENDING);
+                    assertThat(delivery.getClaimedAt()).isNotNull();
+                    assertThat(delivery.getCompletedAt()).isNull();
+                });
+
+            releaseSend.countDown();
+            future.get(5, TimeUnit.SECONDS);
+        } finally {
+            releaseSend.countDown();
+            executor.shutdown();
+            assertThat(executor.awaitTermination(10, TimeUnit.SECONDS)).isTrue();
+        }
+
+        assertThat(deliveryRepository.findAll())
+            .singleElement()
+            .extracting(NotificationDelivery::getStatus)
+            .isEqualTo(DeliveryStatus.SENT);
+    }
+
+    @Test
     void disabledAlertsDoNotCreateDeliveries() {
         alertRepository.save(alert(AlertStatus.DISABLED, ChannelType.EMAIL, "ops@example.com"));
 
@@ -115,6 +159,28 @@ class WorldEventProcessingIntegrationTest {
 
         assertThat(deliveryRepository.findAll()).isEmpty();
         assertThat(emailChannel.sends()).isZero();
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("nonMatchingAlertCases")
+    void nonMatchingAlertsDoNotCreateDeliveriesOrSendNotifications(
+        String caseName,
+        EventType alertEventType,
+        EventCategory alertCategory,
+        Severity alertMinimumSeverity,
+        EventType eventType,
+        EventCategory eventCategory,
+        Severity eventSeverity
+    ) {
+        alertRepository.save(
+            alert(AlertStatus.ACTIVE, alertEventType, alertCategory, alertMinimumSeverity, ChannelType.EMAIL, "ops@example.com")
+        );
+
+        processingService.process(worldEvent("source-non-match-" + caseName, eventType, eventCategory, eventSeverity));
+
+        assertThat(deliveryRepository.findAll()).isEmpty();
+        assertThat(emailChannel.sends()).isZero();
+        assertThat(slackChannel.sends()).isZero();
     }
 
     @Test
@@ -130,22 +196,29 @@ class WorldEventProcessingIntegrationTest {
     }
 
     @Test
-    void concurrentProcessingUsesDatabaseBackedDeliveryIdempotency() throws Exception {
+    void concurrentProcessingUsesDatabaseBackedEventAndDeliveryIdempotency() throws Exception {
         alertRepository.save(alert(AlertStatus.ACTIVE, ChannelType.EMAIL, "ops@example.com"));
-        WorldEvent event = worldEventRepository.saveAndFlush(
-            worldEvent("source-concurrent", EventType.BREAKING_NEWS, EventCategory.NEWS, Severity.HIGH)
-        );
         int workers = 8;
         CountDownLatch ready = new CountDownLatch(workers);
         CountDownLatch start = new CountDownLatch(1);
+        ConcurrentLinkedQueue<Throwable> failures = new ConcurrentLinkedQueue<>();
         var executor = Executors.newFixedThreadPool(workers);
 
         List<java.util.concurrent.Future<?>> futures = new java.util.ArrayList<>();
         for (int i = 0; i < workers; i++) {
             futures.add(executor.submit(() -> {
-                ready.countDown();
-                start.await(5, TimeUnit.SECONDS);
-                processingService.process(event);
+                try {
+                    ready.countDown();
+                    if (!start.await(5, TimeUnit.SECONDS)) {
+                        throw new AssertionError("Timed out waiting for concurrent start signal.");
+                    }
+
+                    processingService.process(
+                        worldEvent("source-concurrent-unsaved", EventType.BREAKING_NEWS, EventCategory.NEWS, Severity.HIGH)
+                    );
+                } catch (Throwable throwable) {
+                    failures.add(throwable);
+                }
                 return null;
             }));
         }
@@ -159,11 +232,10 @@ class WorldEventProcessingIntegrationTest {
             future.get();
         }
 
-        assertThat(ready.await(5, TimeUnit.SECONDS)).isTrue();
-        start.countDown();
-        executor.shutdown();
-        assertThat(executor.awaitTermination(10, TimeUnit.SECONDS)).isTrue();
-
+        assertThat(failures).isEmpty();
+        assertThat(worldEventRepository.findAll())
+            .extracting(WorldEvent::getSourceEventId)
+            .containsExactly("source-concurrent-unsaved");
         assertThat(deliveryRepository.findAll()).hasSize(1);
         assertThat(emailChannel.sends()).isEqualTo(1);
     }
@@ -184,6 +256,27 @@ class WorldEventProcessingIntegrationTest {
     }
 
     @Test
+    void thrownChannelFailureIsPersistedWithoutRollingBackSuccessfulChannel() {
+        slackChannel.nextException(new RuntimeException("slack unavailable"));
+        alertRepository.save(activeAlert(ChannelType.EMAIL, "ops@example.com", ChannelType.SLACK, "#ops"));
+
+        processingService.process(worldEvent("source-thrown-failure", EventType.BREAKING_NEWS, EventCategory.NEWS, Severity.HIGH));
+
+        assertThat(deliveryRepository.findAll())
+            .extracting(
+                NotificationDelivery::getChannelType,
+                NotificationDelivery::getStatus,
+                NotificationDelivery::getFailureReason
+            )
+            .containsExactlyInAnyOrder(
+                org.assertj.core.groups.Tuple.tuple(ChannelType.EMAIL, DeliveryStatus.SENT, null),
+                org.assertj.core.groups.Tuple.tuple(ChannelType.SLACK, DeliveryStatus.FAILED, "slack unavailable")
+            );
+        assertThat(emailChannel.sends()).isEqualTo(1);
+        assertThat(slackChannel.sends()).isEqualTo(1);
+    }
+
+    @Test
     void retryReusesExistingFailedDelivery() {
         emailChannel.nextResult(NotificationResult.failed("provider timeout"));
         alertRepository.save(alert(AlertStatus.ACTIVE, ChannelType.EMAIL, "ops@example.com"));
@@ -200,6 +293,70 @@ class WorldEventProcessingIntegrationTest {
     }
 
     @Test
+    void retryDoesNotResendSuccessfulDelivery() {
+        alertRepository.save(alert(AlertStatus.ACTIVE, ChannelType.EMAIL, "ops@example.com"));
+        processingService.process(worldEvent("source-retry-sent", EventType.BREAKING_NEWS, EventCategory.NEWS, Severity.HIGH));
+        NotificationDelivery sentDelivery = deliveryRepository.findAll().getFirst();
+
+        boolean retried = retryService.retry(sentDelivery.getId());
+
+        NotificationDelivery unchangedDelivery = deliveryRepository.findById(sentDelivery.getId()).orElseThrow();
+        assertThat(retried).isFalse();
+        assertThat(unchangedDelivery.getStatus()).isEqualTo(DeliveryStatus.SENT);
+        assertThat(deliveryRepository.findAll()).hasSize(1);
+        assertThat(emailChannel.sends()).isEqualTo(1);
+    }
+
+    @Test
+    void concurrentRetryClaimsExistingFailedDeliveryOnlyOnce() throws Exception {
+        emailChannel.nextResult(NotificationResult.failed("provider timeout"));
+        alertRepository.save(alert(AlertStatus.ACTIVE, ChannelType.EMAIL, "ops@example.com"));
+        processingService.process(worldEvent("source-concurrent-retry", EventType.BREAKING_NEWS, EventCategory.NEWS, Severity.HIGH));
+        NotificationDelivery failedDelivery = deliveryRepository.findAll().getFirst();
+        int workers = 8;
+        CountDownLatch ready = new CountDownLatch(workers);
+        CountDownLatch start = new CountDownLatch(1);
+        AtomicInteger successfulRetries = new AtomicInteger();
+        ConcurrentLinkedQueue<Throwable> failures = new ConcurrentLinkedQueue<>();
+        var executor = Executors.newFixedThreadPool(workers);
+
+        List<java.util.concurrent.Future<?>> futures = new java.util.ArrayList<>();
+        for (int i = 0; i < workers; i++) {
+            futures.add(executor.submit(() -> {
+                try {
+                    ready.countDown();
+                    if (!start.await(5, TimeUnit.SECONDS)) {
+                        throw new AssertionError("Timed out waiting for concurrent retry start signal.");
+                    }
+
+                    if (retryService.retry(failedDelivery.getId())) {
+                        successfulRetries.incrementAndGet();
+                    }
+                } catch (Throwable throwable) {
+                    failures.add(throwable);
+                }
+                return null;
+            }));
+        }
+
+        assertThat(ready.await(5, TimeUnit.SECONDS)).isTrue();
+        start.countDown();
+        executor.shutdown();
+        assertThat(executor.awaitTermination(10, TimeUnit.SECONDS)).isTrue();
+
+        for (java.util.concurrent.Future<?> future : futures) {
+            future.get();
+        }
+
+        NotificationDelivery retriedDelivery = deliveryRepository.findById(failedDelivery.getId()).orElseThrow();
+        assertThat(failures).isEmpty();
+        assertThat(successfulRetries).hasValue(1);
+        assertThat(retriedDelivery.getStatus()).isEqualTo(DeliveryStatus.SENT);
+        assertThat(deliveryRepository.findAll()).hasSize(1);
+        assertThat(emailChannel.sends()).isEqualTo(2);
+    }
+
+    @Test
     void databaseEnforcesDeliveryIdentityUniqueness() {
         Alert alert = alertRepository.save(alert(AlertStatus.ACTIVE, ChannelType.EMAIL, "ops@example.com"));
         WorldEvent event = worldEventRepository.saveAndFlush(
@@ -209,6 +366,17 @@ class WorldEventProcessingIntegrationTest {
 
         assertThatThrownBy(() -> deliveryRepository.saveAndFlush(
             delivery(alert.getId(), event.getId(), ChannelType.EMAIL, "ops@example.com")
+        )).isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void databaseEnforcesWorldEventSourceEventIdUniqueness() {
+        worldEventRepository.saveAndFlush(
+            worldEvent("source-event-unique", EventType.BREAKING_NEWS, EventCategory.NEWS, Severity.HIGH)
+        );
+
+        assertThatThrownBy(() -> worldEventRepository.saveAndFlush(
+            worldEvent("source-event-unique", EventType.MARKET_MOVEMENT, EventCategory.MARKET, Severity.CRITICAL)
         )).isInstanceOf(DataIntegrityViolationException.class);
     }
 
@@ -234,6 +402,27 @@ class WorldEventProcessingIntegrationTest {
             .eventType(EventType.BREAKING_NEWS)
             .category(EventCategory.NEWS)
             .minimumSeverity(Severity.MEDIUM)
+            .status(status)
+            .channels(new java.util.LinkedHashSet<>(List.of(
+                AlertChannel.builder().channelType(channelType).target(target).build()
+            )))
+            .build();
+    }
+
+    private static Alert alert(
+        AlertStatus status,
+        EventType eventType,
+        EventCategory category,
+        Severity minimumSeverity,
+        ChannelType channelType,
+        String target
+    ) {
+        return Alert.builder()
+            .userId(UUID.randomUUID())
+            .name("Critical operations")
+            .eventType(eventType)
+            .category(category)
+            .minimumSeverity(minimumSeverity)
             .status(status)
             .channels(new java.util.LinkedHashSet<>(List.of(
                 AlertChannel.builder().channelType(channelType).target(target).build()
@@ -267,6 +456,38 @@ class WorldEventProcessingIntegrationTest {
             .build();
     }
 
+    private static Stream<Arguments> nonMatchingAlertCases() {
+        return Stream.of(
+            Arguments.of(
+                "severity-below-threshold",
+                EventType.BREAKING_NEWS,
+                EventCategory.NEWS,
+                Severity.HIGH,
+                EventType.BREAKING_NEWS,
+                EventCategory.NEWS,
+                Severity.MEDIUM
+            ),
+            Arguments.of(
+                "category-mismatch",
+                EventType.BREAKING_NEWS,
+                EventCategory.NEWS,
+                Severity.MEDIUM,
+                EventType.BREAKING_NEWS,
+                EventCategory.SECURITY,
+                Severity.HIGH
+            ),
+            Arguments.of(
+                "event-type-mismatch",
+                EventType.BREAKING_NEWS,
+                EventCategory.NEWS,
+                Severity.MEDIUM,
+                EventType.MARKET_MOVEMENT,
+                EventCategory.NEWS,
+                Severity.HIGH
+            )
+        );
+    }
+
     @TestConfiguration
     static class TestChannels {
 
@@ -286,7 +507,10 @@ class WorldEventProcessingIntegrationTest {
         private final ChannelType channelType;
         private final AtomicInteger sends = new AtomicInteger();
         private final ConcurrentLinkedQueue<NotificationResult> results = new ConcurrentLinkedQueue<>();
+        private final ConcurrentLinkedQueue<RuntimeException> exceptions = new ConcurrentLinkedQueue<>();
         private final CopyOnWriteArrayList<Boolean> transactionStates = new CopyOnWriteArrayList<>();
+        private volatile CountDownLatch sendStarted;
+        private volatile CountDownLatch releaseSend;
 
         RecordingNotificationChannel(ChannelType channelType) {
             this.channelType = channelType;
@@ -301,12 +525,26 @@ class WorldEventProcessingIntegrationTest {
         public NotificationResult send(Notification notification) {
             sends.incrementAndGet();
             transactionStates.add(TransactionSynchronizationManager.isActualTransactionActive());
+            awaitIfBlocked();
+            RuntimeException exception = exceptions.poll();
+            if (exception != null) {
+                throw exception;
+            }
             NotificationResult result = results.poll();
             return result == null ? NotificationResult.sent() : result;
         }
 
         void nextResult(NotificationResult result) {
             results.add(result);
+        }
+
+        void nextException(RuntimeException exception) {
+            exceptions.add(exception);
+        }
+
+        void blockNextSend(CountDownLatch sendStarted, CountDownLatch releaseSend) {
+            this.sendStarted = sendStarted;
+            this.releaseSend = releaseSend;
         }
 
         int sends() {
@@ -320,7 +558,31 @@ class WorldEventProcessingIntegrationTest {
         void reset() {
             sends.set(0);
             results.clear();
+            exceptions.clear();
             transactionStates.clear();
+            sendStarted = null;
+            releaseSend = null;
+        }
+
+        private void awaitIfBlocked() {
+            CountDownLatch currentSendStarted = sendStarted;
+            CountDownLatch currentReleaseSend = releaseSend;
+            if (currentSendStarted == null || currentReleaseSend == null) {
+                return;
+            }
+
+            currentSendStarted.countDown();
+            try {
+                if (!currentReleaseSend.await(5, TimeUnit.SECONDS)) {
+                    throw new AssertionError("Timed out waiting to release blocked provider send.");
+                }
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                throw new RuntimeException("Interrupted while waiting to release blocked provider send.", exception);
+            } finally {
+                sendStarted = null;
+                releaseSend = null;
+            }
         }
     }
 }
