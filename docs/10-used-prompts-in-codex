@@ -249,3 +249,15 @@ Please structure the markdown report using the following outline, providing conc
 7. **Next Engineering Priorities** (Observability/metrics, multiple targets support, and future-proofing integration providers).
 
 Write the complete markdown file inside a single, clean code block so I can copy-paste it directly into `docs/09-final-validation-report.md`.
+
+----
+
+Please generate a standard Spring Boot global exception handler class named `GlobalExceptionHandler` inside the `com.example.alerts.alert.presentation` package.
+
+It should use `@RestControllerAdvice` to clean up framework-level exception logging and return clean, unified JSON error structures to the client instead of allowing raw HTML error pages or messy `DefaultHandlerExceptionResolver` console warnings.
+
+Requirements:
+1. Include an `@ExceptionHandler` for `HttpRequestMethodNotSupportedException.class`. It should return a `405 Method Not Allowed` status with a structured response map containing a descriptive, human-readable message about the unsupported method and listed allowed methods.
+2. Include an `@ExceptionHandler` for `MethodArgumentNotValidException.class`. It should catch validation failures, extract field-specific messages into a key-value error map, and return a `400 Bad Request` status.
+3. Include a fallback `@ExceptionHandler(Exception.class)` to gracefully intercept any uncaught internal server errors, log them safely using SLF4J, and return a generic `500 Internal Server Error` JSON payload.
+4. Use standard Java `Map.put(key, value)` inside the handlers to construct the response bodies (containing fields like timestamp, status, error, and message).
