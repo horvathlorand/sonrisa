@@ -20,21 +20,21 @@ public class NotificationDeliveryClaimService {
     private final NotificationDeliveryRepository deliveryRepository;
 
     public Optional<NotificationDelivery> createClaim(Alert alert, WorldEvent event, AlertChannel channel) {
-        return transactionCutter.inNewTransaction(() ->
-            claimRepository.createClaim(
+        return transactionCutter.inNewTransaction(() -> {
+            return claimRepository.createClaim(
                     alert.getId(),
                     event.getId(),
                     channel.getChannelType(),
                     channel.getTarget()
                 )
-                .flatMap(deliveryRepository::findById)
-        );
+                .flatMap(deliveryRepository::findById);
+        });
     }
 
     public Optional<NotificationDelivery> claimFailedForRetry(NotificationDelivery delivery) {
-        return transactionCutter.inNewTransaction(() ->
-            claimRepository.claimFailedForRetry(delivery.getId())
-                .flatMap(deliveryRepository::findById)
-        );
+        return transactionCutter.inNewTransaction(() -> {
+            return claimRepository.claimFailedForRetry(delivery.getId())
+                .flatMap(deliveryRepository::findById);
+        });
     }
 }

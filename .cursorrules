@@ -1,0 +1,3 @@
+Baseline: Java 25, Spring Boot 3.x, Gradle (with Wrapper), PostgreSQL, Flyway.
+Constraint 1: Global filtering criteria must be explicit DB columns. JSONB is only for event-specific extension data.
+Constraint 2: External network calls (Slack/Email) MUST execute OUTSIDE active Spring @Transactional boundaries.
