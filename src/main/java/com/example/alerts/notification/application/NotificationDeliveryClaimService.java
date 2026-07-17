@@ -4,7 +4,6 @@ import com.example.alerts.alert.domain.Alert;
 import com.example.alerts.alert.domain.AlertChannel;
 import com.example.alerts.common.application.TransactionCutter;
 import com.example.alerts.event.domain.WorldEvent;
-import com.example.alerts.notification.domain.DeliveryStatus;
 import com.example.alerts.notification.domain.NotificationDelivery;
 import com.example.alerts.notification.infrastructure.NotificationDeliveryClaimRepository;
 import com.example.alerts.notification.infrastructure.NotificationDeliveryRepository;
@@ -33,15 +32,9 @@ public class NotificationDeliveryClaimService {
     }
 
     public Optional<NotificationDelivery> claimFailedForRetry(NotificationDelivery delivery) {
-        return transactionCutter.inNewTransaction(() -> {
-            if (delivery.getStatus() != DeliveryStatus.FAILED) {
-                return Optional.empty();
-            }
-            NotificationDelivery managed = deliveryRepository.findById(delivery.getId())
-                .orElseThrow(() -> new IllegalArgumentException("Delivery not found: " + delivery.getId()));
-            managed.resetForRetry();
-            managed.claim();
-            return Optional.of(managed);
-        });
+        return transactionCutter.inNewTransaction(() ->
+            claimRepository.claimFailedForRetry(delivery.getId())
+                .flatMap(deliveryRepository::findById)
+        );
     }
 }

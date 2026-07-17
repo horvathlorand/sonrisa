@@ -44,4 +44,25 @@ public class NotificationDeliveryClaimRepository {
         );
         return ids.stream().findFirst();
     }
+
+    public Optional<UUID> claimFailedForRetry(UUID deliveryId) {
+        String sql = """
+            UPDATE notification_deliveries
+            SET
+                status = 'PENDING',
+                claimed_at = NOW(),
+                completed_at = NULL,
+                failure_reason = NULL
+            WHERE id = ?
+              AND status = 'FAILED'
+            RETURNING id
+            """;
+
+        List<UUID> ids = jdbcTemplate.query(
+            sql,
+            ps -> ps.setObject(1, deliveryId),
+            (rs, rowNum) -> rs.getObject("id", UUID.class)
+        );
+        return ids.stream().findFirst();
+    }
 }

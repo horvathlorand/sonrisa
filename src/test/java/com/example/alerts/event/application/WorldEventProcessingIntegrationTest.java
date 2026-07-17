@@ -140,13 +140,23 @@ class WorldEventProcessingIntegrationTest {
         CountDownLatch start = new CountDownLatch(1);
         var executor = Executors.newFixedThreadPool(workers);
 
+        List<java.util.concurrent.Future<?>> futures = new java.util.ArrayList<>();
         for (int i = 0; i < workers; i++) {
-            executor.submit(() -> {
+            futures.add(executor.submit(() -> {
                 ready.countDown();
                 start.await(5, TimeUnit.SECONDS);
                 processingService.process(event);
                 return null;
-            });
+            }));
+        }
+
+        assertThat(ready.await(5, TimeUnit.SECONDS)).isTrue();
+        start.countDown();
+        executor.shutdown();
+        assertThat(executor.awaitTermination(10, TimeUnit.SECONDS)).isTrue();
+
+        for (java.util.concurrent.Future<?> future : futures) {
+            future.get();
         }
 
         assertThat(ready.await(5, TimeUnit.SECONDS)).isTrue();
