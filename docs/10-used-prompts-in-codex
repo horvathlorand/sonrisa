@@ -1,0 +1,251 @@
+Act as a senior software architect. We are building a Spring Boot notification platform MVP using Java 25 and Gradle, following a modular monolith style. 
+
+Please read the full context from the root: @AGENTS.md and the files inside the @docs/ directory. 
+
+As the first step, generate the core project build configuration: `build.gradle` and `settings.gradle` files. Use the latest stable Spring Boot 3.x version compatible with Java 25. Include dependencies for Spring Data JPA, Flyway, and the PostgreSQL driver. Do not write unnecessary explanations, provide only the file contents ready to be saved.
+
+----
+
+We are implementing 'Phase 4 — First Vertical Slice' based on @02-plan.md. 
+
+Please generate the following components according to the package structure rules defined in @AGENTS.md:
+1. The `WorldEvent` and `Alert` domain entities. Ensure that global filtering criteria (like category, type, and severity) are explicitly modelled as typed Java fields and relational DB columns. Do not hide them inside JSONB.
+2. The Flyway migration SQL file (`V1__init_schema.sql`) creating the necessary tables. The `notification_deliveries` table MUST enforce the strict uniqueness invariant using a composite constraint: `UNIQUE (alert_id, event_id, channel_type, target)`.
+3. The `ApplicationService` handling event ingestion. Following @04-architecture.md, it must use a short database transaction to try to CREATE or CLAIM a `NotificationDelivery` record. If a database-level uniqueness violation occurs (meaning it was already processed or claimed by another concurrent thread), it must fail or exit silently and safely (idempotency). If successful, the transaction commits.
+
+Provide only the clean Java source code and SQL script, without structural explanations.
+
+----
+
+Act as a senior software architect. Based on our requirements in @AGENTS.md, @docs/02-plan.md, and our architectural specification in @docs/04-architecture.md, please generate the first complete code batch for our project:
+
+1. `build.gradle` and `settings.gradle`
+Create a clean Spring Boot 3.x project configuration utilizing Java 25. Include dependencies for Spring Data JPA, PostgreSQL, Flyway, and Lombok to minimize boilerplate.
+
+2. `V1__init_schema.sql` (Flyway Migration script)
+Generate the database schema matching the design explicitly laid out in @docs/04-architecture.md. Make sure the `alert_channels` table correctly maps the channel types and targets for an alert, and the `notification_deliveries` table strictly enforces the database-level identity constraint: `UNIQUE (alert_id, event_id, channel_type, target)`.
+
+3. `Alert.java` (Domain Entity)
+Implement the Alert entity using Lombok annotations (`@Getter`, `@NoArgsConstructor(access = AccessLevel.PROTECTED)`, `@AllArgsConstructor`, `@Builder`). Map the collection of channels using an `@ElementCollection` backing a dedicated `@Embeddable` static inner class `AlertChannel` (containing `channelType` and `target`), matching our relational database constraints. Keep the `matches(WorldEventCriteria criteria)` logic.
+
+4. `EventIngestionApplicationService.java`
+Implement this service with Lombok's `@RequiredArgsConstructor`. It must iterate through the matched alert's `AlertChannels` to spin up a delivery attempt for each active channel using its respective target. Enclose the save operation in a tight `TransactionTemplate` block to gracefully capture and ignore any database-level `DataIntegrityViolationException` (enforcing our core concurrency/idempotency policy outside long network boundaries).
+
+Provide only the clean, complete Java source code and SQL scripts. Do not provide high-level meta-explanations.
+
+----
+
+1. For all JPA Entities (e.g., `Alert`, `WorldEvent`, `NotificationDelivery`):
+   - Add `@Getter` at the class level. Completely remove all manual getter methods.
+   - Add `@NoArgsConstructor(access = AccessLevel.PROTECTED)` to satisfy JPA requirements safely.
+   - Add `@AllArgsConstructor` and `@Builder` for clean instance creation.
+   - Remove any manual constructors that only serve to map fields without validation.
+   - Ensure auditing fields (like `createdAt`) are initialized inline (e.g., `= Instant.now();`) and annotated with `@Column(nullable = false, updatable = false)`.
+   - Ensure `@Setter` and `@Data` are NOT used.
+
+----
+
+Act as a senior software architect. Based strictly on the database design, folder structure, and transaction guidelines in @docs/04-architecture.md, and adhering 100% to the strict Lombok and JPA rules in @AGENTS.md, please generate the following Java files (do NOT generate any SQL migration scripts, as the schema is already created):
+
+1. `WorldEvent.java` (Entity, save in `com.example.alerts.event.domain`)
+   - Annotate with `@Entity`, `@Table(name = "world_events")`, `@Getter`, `@NoArgsConstructor(access = AccessLevel.PROTECTED)`, `@AllArgsConstructor(access = AccessLevel.PRIVATE)`, and `@Builder`.
+   - Ensure `metadata` (JSONB) is mapped using Hibernate's `@JdbcTypeCode(SqlTypes.JSON)`.
+   - Ensure `createdAt` uses `@Builder.Default` with `Instant.now()`.
+   - Absolutely NO manual getters, setters, or manual constructors.
+
+2. `Alert.java` and `AlertChannel.java` (Save in `com.example.alerts.alert.domain`)
+   - `AlertChannel` is an `@Embeddable` containing `channelType` (Enum) and `target` (String). Apply `@Getter`, `@NoArgsConstructor(access = AccessLevel.PROTECTED)`, and `@AllArgsConstructor`.
+   - `Alert` has `@ElementCollection` of `AlertChannel` mapped to table `alert_channels` with `@CollectionTable(name = "alert_channels", joinColumns = @JoinColumn(name = "alert_id"))`.
+   - Apply clean Lombok annotations on both. Ensure `@Setter` or `@Data` are NOT used on either class.
+
+3. `NotificationDelivery.java` (Entity, save in `com.example.alerts.notification.domain`)
+   - Annotate with `@Entity` and `@Table`.
+   - Align exactly with the DDL: `claimedAt` must be nullable, and add `createdAt` (with `@Builder.Default` of `Instant.now()`).
+   - Add three explicit, encapsulated domain business mutator methods:
+     * `public void claim() { ... }` (Sets claimedAt, ensures state is PENDING).
+     * `public void markSent() { ... }` (Sets status to SENT, sets completedAt).
+     * `public void markFailed(String reason) { ... }` (Sets status to FAILED, sets completedAt and failureReason).
+   - Absolutely no `@Setter` or manual constructors.
+
+4. `EventIngestionApplicationService.java` (Save in `com.example.alerts.notification.application`)
+   - Implement with `@RequiredArgsConstructor`. Make injected repositories `private final`.
+   - Create a method that finds candidate alerts, loops over their channels, and uses a Spring `TransactionTemplate` to write a `PENDING` `NotificationDelivery` for each channel. Wrap the transaction save call in a try-catch block to ignore JPA/DB `DataIntegrityViolationException` (handling concurrent duplicates silently as per the idempotency specification).
+   - Crucially, the service must keep the actual delivery dispatch (network call) outside of active transactional boundaries.
+
+Generate only these complete, compiler-ready files without placeholder code. Do not write generic explanations.
+
+----
+
+We are moving to the next phase of our official pipeline. 
+
+Please read and strictly follow the instructions inside @prompts/004-implementation.md to implement the application and infrastructure layers.
+
+Pay extreme attention to the strict rules defined in @docs/04-architecture.md and @AGENTS.md:
+1. ENVIRONMENT: We use Gradle and Docker. Testcontainers MUST be used for integration tests (no H2 database, use a real PostgreSQL container).
+2. TRANSACTION BOUNDARIES: External network calls (Email/Slack) MUST NOT execute inside active Spring @Transactional boundaries. Ensure the database transaction is committed BEFORE the network call, and the result is persisted in a subsequent, separate short transaction.
+3. IDEMPOTENCY: Enforce the composite unique constraint (alertId + eventId + channelType + target) via database-backed idempotent workflow as described in the architecture doc.
+
+Please generate the required repositories, services, adapters, and integration tests now.
+
+----
+
+We are executing the 004-implementation phase (from prompts/004-implementation.md). 
+Project Environment: Java 25, Spring Boot 3.x, Gradle, and Docker (with PostgreSQL).
+
+Please generate the required layers: Repositories, Application Services, and Infrastructure Adapters for the Slack and Email channels based on the following STRICT Architectural Constraints (from AGENTS.md and 04-architecture.md):
+
+1. TRANSACTION BOUNDARIES (Strict Isolation): External network calls (like calling Slack or Email HTTP APIs) MUST NOT execute inside an active Spring @Transactional boundary. The database transaction must fully commit BEFORE the network call is initiated. The dispatch result must then be persisted in a subsequent, separate, short transaction. Use transaction cutting/chopping (e.g., using TransactionTemplate or a separate service with Propagation.REQUIRES_NEW).
+
+2. IDEMPOTENCY & DUPLICATE PROTECTION: Enforce the composite unique constraint (alertId + eventId + channelType + target) using a database-backed idempotent workflow as described in the architecture doc to absolutely prevent duplicate notifications.
+
+3. LOMBOK & IMMUTABILITY: Adhere to AGENTS.md guidelines. Do NOT use manual constructors or @Setter annotations on core aggregates. Use @RequiredArgsConstructor for dependency injection and keep domain entities encapsulated.
+
+4. INTEGRATION TESTING: For integration tests, write a Testcontainers-based setup that spins up a real PostgreSQL container. We do NOT use H2 for testing since we are in a native Docker environment.
+
+Please generate the necessary Java classes (interfaces and implementations) and the Testcontainers integration test step-by-step. Let's start with the Repository interfaces and the Transaction Cutter component first.
+
+----
+
+Act as a hostile senior engineer reviewing code written by another AI agent. 
+I am going to provide you with my implementation of the 004 phase. 
+Please evaluate it strictly against the requirements in prompts/005-adversarial-review.md, especially focusing on transaction boundaries and database connection pool usage.
+
+Here is my Integration Test code:
+
+'WorldEventProcessingIntegrationTest.java'
+
+----
+
+Please fix the critical findings from our adversarial review in the following two files.
+
+1. In 'NotificationDeliveryClaimService.java': Make the retry claim operation completely concurrency-safe. Instead of checking a detached state, execute an atomic state transition directly in the database (e.g., via a custom repository update query: `UPDATE notification_deliveries SET status='PENDING' WHERE id=? AND status='FAILED'`) or utilize database locking to guarantee that two concurrent retries cannot both succeed.
+
+2. In 'WorldEventIngestionService.java': Handle the concurrency race condition during event ingestion. If a duplicate unique key violation (DataIntegrityViolationException) occurs because another thread inserted the same 'sourceEventId' at the exact same millisecond, catch the exception and fall back to reloading the existing event from the database.
+
+Please provide the fully rewritten Java files for:
+- NotificationDeliveryClaimService.java
+- WorldEventIngestionService.java
+- (And any required Repository modifications if you introduce an atomic update method)
+
+----
+
+Act as a senior test engineer and Java architect. Please perform a rigorous review of my test suite based on the instructions inside 'prompts/006-test-review.md'. 
+
+Specifically, evaluate whether my tests provide real confidence in our domain behavior, transaction boundaries, concurrency handling, and database-level idempotency without overusing mocks or providing false confidence.
+
+Here is my complete integration test file ('WorldEventProcessingIntegrationTest.java') for your review:
+
+
+
+Please analyze this file against the 006 review criteria and:
+1. Identify any remaining gaps, vulnerabilities, or areas of "false confidence" (e.g., transaction boundary assertions, channel failure isolation, database constraint bypasses).
+2. Recommend the smallest, highest-leverage set of additional test cases to reach absolute behavioral confidence under failure.
+
+----
+
+Excellent analysis! Let's address these gaps step-by-step. 
+
+First, let's fix and improve our concurrency and database idempotency tests. Please rewrite my existing concurrency test to cover the "unsaved duplicate source events" race condition, and add the DB-level idempotency test for 'world_events.source_event_id'.
+
+Specifically, provide the complete, copy-pasteable Java code for:
+1. An updated concurrent processing test where 8 workers attempt to process a fresh WorldEvent with the same sourceEventId at the same time. Ensure we assert that exactly 1 world_events row is created, exactly 1 delivery is created, and no workers fail catastrophically.
+2. A database-level idempotency test verifying that the unique constraint on 'world_events.source_event_id' is actively enforced by the schema.
+
+Make sure these fit seamlessly into our 'WorldEventProcessingIntegrationTest.java'.
+
+----
+
+Now let's implement the tests proving transaction boundaries and provider failure isolation:
+
+1. Slow provider test: Create a test where the fake channel blocks on a CountDownLatch. While blocked, the test thread queries the database to assert that the delivery row is already visible (committed) as PENDING, and the external network call is indeed running outside of an active database transaction.
+2. Exception-throwing provider test: Configure a fake channel (e.g., Slack) to throw a RuntimeException("slack unavailable"). Assert that the other channel (e.g., Email) still succeeds (is marked as SENT), the failed channel is marked as FAILED with the failure reason persisted, and the overall processing does not crash.
+
+----
+
+Finally, let's write the remaining tests for Alert Matching and Retry edge cases:
+
+1. Alert Matching Test: A parameterized test showing that alerts with:
+   - Severity below threshold
+   - Category mismatch
+   - Event type mismatch
+   ...create exactly zero deliveries and zero sends.
+
+2. Retry Guard Test: Process a successful delivery, attempt to trigger a retry on it, and assert that it returns false, the status remains SENT, and no duplicate sends occur.
+
+3. Concurrent Retry Test: Create a single failed delivery, trigger concurrent retry claims from multiple threads, and assert that exactly one thread succeeds in claiming it, the send count increments exactly once, and no duplicate deliveries are created.
+
+----
+
+Act as a Principal Software Engineer and System Architect. We are ready to perform our final, rigorous engineering review under 'prompts/007-final-validation.md'. 
+
+Our build is green, all concurrency integration tests are passing, and we have successfully resolved the critical transaction boundary and retry concurrency bugs discovered in Phase 005 and 006.
+
+To help you perform a highly accurate and repo-specific assessment, here is our current implementation summary:
+
+1. System Architecture:
+   - Event processing is non-transactional in 'WorldEventProcessingService.process()'.
+   - Database operations (delivery claims, recording results, event ingestion) are strictly isolated using a custom 'TransactionCutter.inNewTransaction()' mechanism.
+   - Provider network calls ('send()') execute completely OUTSIDE of active database transactions, preventing Hikari pool starvation.
+   - Independent failure isolation is fully implemented: if Slack throws a RuntimeException, the Email channel still successfully commits and finishes.
+
+2. Idempotency & Database Constraints:
+   - First-send idempotency: enforced by a unique DB constraint on (alert_id, event_id, channel_type, target) and resolved atomically using INSERT ON CONFLICT DO NOTHING.
+   - Retry idempotency: Refactored to execute an atomic DB state transition (UPDATE ... WHERE status = 'FAILED' RETURNING id), preventing double-retries in concurrent races.
+   - Ingestion idempotency: Concurrent duplicate 'sourceEventId' ingestion catches 'DataIntegrityViolationException' and gracefully reloads the existing event.
+
+3. Complete Verification Suite:
+   - Thorough multi-threaded tests using ExecutorService with explicit 'Future.get()' assertions (ensuring no silent worker crashes are ignored).
+   - Slow-provider blocking latch tests proving DB states are committed before network calls.
+
+Please read this current state and generate a concise final engineering assessment structured around the 15 evaluation questions in 'prompts/007-final-validation.md'. 
+
+Group your findings strictly into:
+- BLOCKER (Things that would prevent deployment right now. Note: Since we fixed the concurrency and retry races, this section should ideally be empty or only contain minor configuration alignment!)
+- IMPORTANT (Key architectural debt or missing documentation assumptions)
+- NICE TO HAVE (Future optimizations like metric instrumentation, pagination, or multi-target channel schema updates)
+
+End the assessment with:
+- "What would you reject before production?"
+- "What would be the next engineering priorities?"
+
+----
+
+Please write a simple, clean REST Controller to fulfill the documented MVP scope for the Admin API. 
+
+Create a new package 'com.example.alerts.alert.presentation' (or adapt to our package structure) and provide the complete Java files for:
+
+1. 'AlertAdminController.java':
+   - 'POST /api/admin/alerts': Creates a new Alert. It should accept a DTO, map it to our 'Alert' domain entity (including its 'AlertChannel' list), and save it using 'AlertRepository'.
+   - 'GET /api/admin/alerts': Returns all alerts.
+   - 'GET /api/admin/deliveries': Returns all 'NotificationDelivery' records from the 'NotificationDeliveryRepository' so admins can inspect failures, success states, and retry attempts.
+
+2. 'CreateAlertRequest.java' (and any nested Channel DTOs):
+   - A clean Request DTO to capture alert creation parameters: eventType, category, severityThreshold, and a list of channels (channelType, target).
+
+Please ensure:
+- It uses standard Spring Web annotations (@RestController, @RequestMapping, @PostMapping, @GetMapping, @RequestBody).
+- It uses constructor-based dependency injection (Lombok's @RequiredArgsConstructor is perfect).
+- It integrates seamlessly with our existing domain entities ('Alert', 'AlertChannel', 'NotificationDelivery', 'ChannelType', 'AlertStatus') and Spring Data JPA repositories.
+
+----
+
+Cannot return a void resultJava(67108970)
+TransactionCutter transactionCutter error in the NotificationDeliveryClaimService, fix that
+
+----
+
+Please generate the final engineering assessment for `docs/09-final-validation-report.md` based on the review criteria in `prompts/007-final-validation.md`.
+
+Incorporate the latest successful changes we just completed in Phase 008 (Admin API endpoints added, Swagger UI integrated, local application.yml configured, and Gradle Wrapper generated).
+
+Please structure the markdown report using the following outline, providing concrete evidence from our codebase (e.g., classes, sql files, configurations):
+
+1. **Executive Summary** (Highlighting that all previous BLOCKERS have been successfully resolved).
+2. **BLOCKER** (This section must explicitly state: "None. All previously identified blockers, including the missing Gradle Wrapper and the unimplemented Admin REST API, have been fully resolved in Phase 008.")
+3. **IMPORTANT** (Acknowledge strong modular monolith architecture, robust DB-level idempotency/concurrency handling, partial failure resiliency, integration test coverage, and document the one-target-per-channel-per-alert MVP design constraint).
+4. **NICE TO HAVE** (Suggestions for future iterations: structured logging/metrics, pagination/filtering for admin reads, provider-side idempotency keys/reconciliation, and potential registry caching).
+5. **Answers to the 15 Evaluation Questions** (Brief, 1-2 sentence expert answers matching our actual implementation).
+6. **Production Readiness Verdict** (Confirm that the system is APPROVED for production release of the MVP).
+7. **Next Engineering Priorities** (Observability/metrics, multiple targets support, and future-proofing integration providers).
+
+Write the complete markdown file inside a single, clean code block so I can copy-paste it directly into `docs/09-final-validation-report.md`.
