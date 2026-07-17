@@ -2,7 +2,9 @@ package com.example.alerts.alert.domain;
 
 import com.example.alerts.event.domain.EventType;
 import com.example.alerts.event.domain.WorldEvent;
+import org.springframework.stereotype.Component;
 
+@Component
 public class NaturalDisasterMatcher implements EventMatcher {
 
     @Override

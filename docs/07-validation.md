@@ -5,7 +5,7 @@
 ## Build Validation
 
 ```bash
-mvn clean verify
+./gradlew clean test
 ```
 
 The build must pass before a milestone is considered complete.

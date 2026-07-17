@@ -112,7 +112,7 @@ The implementation was reviewed for correctness, maintainability, concurrency sa
 
 ```bash
 docker compose up -d
-./gradlew clean build
+./gradlew clean test
 ```
 
 ## MVP Scope
