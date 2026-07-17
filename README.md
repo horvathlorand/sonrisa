@@ -165,6 +165,7 @@ See:
 
 * `docs/01-problem-framing.md`
 * `docs/03-assumptions.md`
+* `docs/11-application-folder-guide.md`
 * `docs/08-limitations-and-next-steps.md`
 
 for the complete scope and rationale.

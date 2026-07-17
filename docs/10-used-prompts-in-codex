@@ -261,3 +261,7 @@ Requirements:
 2. Include an `@ExceptionHandler` for `MethodArgumentNotValidException.class`. It should catch validation failures, extract field-specific messages into a key-value error map, and return a `400 Bad Request` status.
 3. Include a fallback `@ExceptionHandler(Exception.class)` to gracefully intercept any uncaught internal server errors, log them safely using SLF4J, and return a generic `500 Internal Server Error` JSON payload.
 4. Use standard Java `Map.put(key, value)` inside the handlers to construct the response bodies (containing fields like timestamp, status, error, and message).
+
+----
+
+Generate the docs which explains how the function works in the application folders like in the alert, event and notification in docs/11-application-folder-guide.md
